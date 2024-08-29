@@ -90,7 +90,7 @@ func New(opts Options) (*Service, error) {
 	}
 
 	// load tech detect templates
-	techDetectTemplates, err := LoadTemplatesWithTags(opts, templateDirs, []string{"tech", "detect", "favicon"}, true)
+	techDetectTemplates, err := LoadTemplatesWithTags(opts, templateDirs, []string{"tech", "detect", "favicon"}, false, true)
 	if err != nil {
 		return nil, err
 	}
@@ -145,6 +145,10 @@ func (s *Service) Execute() error {
 
 // executeAutomaticScanOnTarget executes automatic scan on given target
 func (s *Service) executeAutomaticScanOnTarget(input *contextargs.MetaInput) {
+	useIncludeID := false
+	if len(s.opts.Options.IncludeIds) > 0 {
+		useIncludeID = true
+	}
 	// get tags using wappalyzer
 	tagsFromWappalyzer := s.getTagsUsingWappalyzer(input)
 	// get tags using detection templates
@@ -155,21 +159,21 @@ func (s *Service) executeAutomaticScanOnTarget(input *contextargs.MetaInput) {
 
 	// create combined final tags
 	finalTags := []string{}
-	for _, tags := range append(tagsFromWappalyzer, tagsFromDetectTemplates...) {
-		if stringsutil.EqualFoldAny(tags, "tech", "waf", "favicon") {
+	for _, tags := range append(tagsFromWappalyzer, append(tagsFromDetectTemplates, s.opts.Options.ExtraTags...)...) {
+		if stringsutil.EqualFoldAny(tags, "tech", "waf", "favicon", "none") {
 			continue
 		}
 		finalTags = append(finalTags, tags)
 	}
 	finalTags = sliceutil.Dedupe(finalTags)
 
-	gologger.Info().Msgf("Found %d tags and %d matches on detection templates on %v [wappalyzer: %d, detection: %d]\n", len(finalTags), matched, input.Input, len(tagsFromWappalyzer), len(tagsFromDetectTemplates))
+	gologger.Info().Msgf("Found %d tags and %d matches on detection templates on %v [wappalyzer: %v, detection: %v extra-tags:%v]\n",
+		len(finalTags), matched, input.Input, tagsFromWappalyzer, tagsFromDetectTemplates, s.opts.Options.ExtraTags)
 
 	// also include any extra tags passed by user
-	finalTags = append(finalTags, s.opts.Options.Tags...)
 	finalTags = sliceutil.Dedupe(finalTags)
 
-	if len(finalTags) == 0 {
+	if len(finalTags) == 0 && !useIncludeID {
 		gologger.Warning().Msgf("Skipping automatic scan since no tags were found on %v\n", input.Input)
 		return
 	}
@@ -177,12 +181,15 @@ func (s *Service) executeAutomaticScanOnTarget(input *contextargs.MetaInput) {
 		gologger.Print().Msgf("Final tags identified for %v: %+v\n", input.Input, finalTags)
 	}
 
-	finalTemplates, err := LoadTemplatesWithTags(s.ServiceOpts, s.templateDirs, finalTags, false)
-	if err != nil {
+	finalTemplates, err := LoadTemplatesWithTags(s.ServiceOpts, s.templateDirs, finalTags, useIncludeID, false)
+	if err != nil && !useIncludeID {
 		gologger.Error().Msgf("%v Error loading templates: %s\n", input.Input, err)
 		return
 	}
+	finalTemplates = sliceutil.Dedupe(finalTemplates)
+
 	gologger.Info().Msgf("Executing %d templates on %v", len(finalTemplates), input.Input)
+
 	eng := core.New(s.opts.Options)
 	execOptions := s.opts.Copy()
 	execOptions.Progress = &testutils.MockProgressClient{} // stats are not supported yet due to centralized logic and cannot be reinitialized
