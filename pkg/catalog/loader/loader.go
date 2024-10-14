@@ -586,3 +586,25 @@ func (s *Store) logErroredTemplates(erred map[string]error) {
 		}
 	}
 }
+
+// ClearFilter clears the tag filter
+func (store *Store) ClearFilter() (err error) {
+	tagFilter, err := templates.NewTagFilter(&templates.TagFilterConfig{
+		Tags:              nil,
+		ExcludeTags:       nil,
+		Authors:           nil,
+		Severities:        nil,
+		ExcludeSeverities: nil,
+		IncludeTags:       nil,
+		IncludeIds:        nil,
+		ExcludeIds:        nil,
+		Protocols:         nil,
+		ExcludeProtocols:  nil,
+		IncludeConditions: nil,
+	})
+	if err != nil {
+		return err
+	}
+	store.tagFilter = tagFilter
+	return
+}
