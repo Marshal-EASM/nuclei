@@ -160,17 +160,18 @@ func (s *Service) executeAutomaticScanOnTarget(input *contextargs.MetaInput) {
 	// create combined final tags
 	finalTags := []string{}
 	for _, tags := range append(tagsFromWappalyzer, append(tagsFromDetectTemplates, s.opts.Options.ExtraTags...)...) {
-		if stringsutil.EqualFoldAny(tags, "tech", "waf", "favicon", "none") {
+		if stringsutil.EqualFoldAny(tags, "tech", "panel", "waf", "favicon", "none", "detect") {
 			continue
 		}
 		finalTags = append(finalTags, tags)
 	}
 	finalTags = sliceutil.Dedupe(finalTags)
 
-	gologger.Info().Msgf("Found %d tags and %d matches on detection templates on %v [wappalyzer: %v, detection: %v extra-tags:%v]\n",
-		len(finalTags), matched, input.Input, tagsFromWappalyzer, tagsFromDetectTemplates, s.opts.Options.ExtraTags)
+	gologger.Info().Msgf("Found %d tags and %d matches on detection templates on %v [wappalyzer: %d %v, detection: %d %v extra-tags:%d %v]\n",
+		len(finalTags), matched, input.Input, len(tagsFromWappalyzer), tagsFromWappalyzer, len(tagsFromDetectTemplates), tagsFromDetectTemplates, len(s.opts.Options.ExtraTags), s.opts.Options.ExtraTags)
 
 	// also include any extra tags passed by user
+	finalTags = append(finalTags, s.opts.Options.Tags...)
 	finalTags = sliceutil.Dedupe(finalTags)
 
 	if len(finalTags) == 0 && !useIncludeID {

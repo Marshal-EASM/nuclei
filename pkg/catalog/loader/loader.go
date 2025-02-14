@@ -53,6 +53,7 @@ type Config struct {
 	AITemplatePrompt         string
 
 	Tags              []string
+	ExtraTags         []string
 	ExcludeTags       []string
 	Protocols         templateTypes.ProtocolTypes
 	ExcludeProtocols  templateTypes.ProtocolTypes
@@ -97,6 +98,7 @@ func NewConfig(options *types.Options, catalog catalog.Catalog, executerOpts pro
 		WorkflowURLs:             options.WorkflowURLs,
 		ExcludeTemplates:         options.ExcludedTemplates,
 		Tags:                     options.Tags,
+		ExtraTags:                options.ExtraTags,
 		ExcludeTags:              options.ExcludeTags,
 		IncludeTemplates:         options.IncludeTemplates,
 		Authors:                  options.Authors,
@@ -643,4 +645,26 @@ func (s *Store) logErroredTemplates(erred map[string]error) {
 			gologger.Error().Msgf("Could not find template '%s': %s", template, err)
 		}
 	}
+}
+
+// ClearFilter clears the tag filter
+func (store *Store) ClearFilter() (err error) {
+	tagFilter, err := templates.NewTagFilter(&templates.TagFilterConfig{
+		Tags:              nil,
+		ExcludeTags:       nil,
+		Authors:           nil,
+		Severities:        nil,
+		ExcludeSeverities: nil,
+		IncludeTags:       nil,
+		IncludeIds:        nil,
+		ExcludeIds:        nil,
+		Protocols:         nil,
+		ExcludeProtocols:  nil,
+		IncludeConditions: nil,
+	})
+	if err != nil {
+		return err
+	}
+	store.tagFilter = tagFilter
+	return
 }

@@ -1,12 +1,14 @@
 package automaticscan
 
 import (
+	"fmt"
 	"github.com/pkg/errors"
 	"github.com/projectdiscovery/gologger"
 	"github.com/projectdiscovery/nuclei/v3/pkg/catalog/config"
 	"github.com/projectdiscovery/nuclei/v3/pkg/templates"
 	"github.com/projectdiscovery/nuclei/v3/pkg/types"
 	sliceutil "github.com/projectdiscovery/utils/slice"
+	"strings"
 )
 
 // getTemplateDirs returns template directories for given input
@@ -15,14 +17,15 @@ func getTemplateDirs(opts Options) ([]string, error) {
 	defaultTemplatesDirectories := []string{config.DefaultConfig.GetTemplateDir()}
 	// adding custom template path if available
 	if len(opts.ExecuterOpts.Options.Templates) > 0 {
-		defaultTemplatesDirectories = append(defaultTemplatesDirectories, opts.ExecuterOpts.Options.Templates...)
+		defaultTemplatesDirectories = opts.ExecuterOpts.Options.Templates
 	}
 	// Collect path for default directories we want to look for templates in
 	var allTemplates []string
 	for _, directory := range defaultTemplatesDirectories {
 		templates, err := opts.ExecuterOpts.Catalog.GetTemplatePath(directory)
 		if err != nil {
-			return nil, errors.Wrap(err, "could not get templates in directory")
+			gologger.Error().Msgf("Could not get templates in directory: %s\n", directory)
+			continue
 		}
 		allTemplates = append(allTemplates, templates...)
 	}
@@ -34,12 +37,23 @@ func getTemplateDirs(opts Options) ([]string, error) {
 }
 
 // LoadTemplatesWithTags loads and returns templates with given tags
-func LoadTemplatesWithTags(opts Options, templateDirs []string, tags []string, logInfo bool) ([]*templates.Template, error) {
-	finalTemplates := opts.Store.LoadTemplatesWithTags(templateDirs, tags)
-	if len(finalTemplates) == 0 {
-		return nil, errors.New("could not find any templates with tech tag")
+func LoadTemplatesWithTags(opts Options, templateDirs []string, tags []string, useIncludeID, logInfo bool) ([]*templates.Template, error) {
+	err := opts.Store.ClearFilter()
+	if err != nil {
+		return nil, err
 	}
+	var finalTemplates []*templates.Template
 
+	if len(tags) > 0 {
+		finalTemplates = opts.Store.LoadTemplatesWithTags(templateDirs, tags)
+	}
+	if useIncludeID {
+		includeTemplates := opts.Store.Templates()
+		finalTemplates = append(finalTemplates, includeTemplates...)
+	}
+	if len(finalTemplates) == 0 {
+		return nil, errors.New(fmt.Sprintf("could not find any templates with %s tag", strings.Join(tags, ",")))
+	}
 	if !opts.ExecuterOpts.Options.DisableClustering {
 		// cluster and reduce requests
 		totalReqBeforeCluster := getRequestCount(finalTemplates) * int(opts.Target.Count())
