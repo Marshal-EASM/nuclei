@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -22,6 +21,7 @@ import (
 	"github.com/projectdiscovery/nuclei/v3/pkg/protocols/common/protocolstate"
 	"github.com/projectdiscovery/nuclei/v3/pkg/templates"
 	"github.com/projectdiscovery/nuclei/v3/pkg/types"
+	"github.com/projectdiscovery/nuclei/v3/pkg/utils/json"
 	"github.com/projectdiscovery/retryablehttp-go"
 	errorutil "github.com/projectdiscovery/utils/errors"
 	"gopkg.in/yaml.v3"
@@ -69,6 +69,7 @@ func init() {
 	// need to set headless to true for headless templates
 	defaultOpts.Headless = true
 	defaultOpts.EnableCodeTemplates = true
+	defaultOpts.EnableSelfContainedTemplates = true
 	if err := protocolstate.Init(defaultOpts); err != nil {
 		gologger.Fatal().Msgf("Could not initialize protocol state: %s\n", err)
 	}
@@ -300,7 +301,7 @@ func formatTemplate(data string) (string, bool, error) {
 	return data, false, errorutil.New("template format failed")
 }
 
-// lintTemplateData lints template data using templateman lint api
+// lintTemplate lints template data using templateman lint api
 func lintTemplate(data string) (bool, error) {
 	resp, err := retryablehttp.DefaultClient().Post(fmt.Sprintf("%s/lint", tmBaseUrl), "application/x-yaml", strings.NewReader(data))
 	if err != nil {

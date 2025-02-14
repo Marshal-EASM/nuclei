@@ -14,6 +14,7 @@ import (
 	"github.com/projectdiscovery/nuclei/v3/pkg/authprovider"
 	"github.com/projectdiscovery/nuclei/v3/pkg/catalog"
 	"github.com/projectdiscovery/nuclei/v3/pkg/fuzz/frequency"
+	"github.com/projectdiscovery/nuclei/v3/pkg/fuzz/stats"
 	"github.com/projectdiscovery/nuclei/v3/pkg/input"
 	"github.com/projectdiscovery/nuclei/v3/pkg/js/compiler"
 	"github.com/projectdiscovery/nuclei/v3/pkg/loader/parser"
@@ -25,6 +26,7 @@ import (
 	"github.com/projectdiscovery/nuclei/v3/pkg/progress"
 	"github.com/projectdiscovery/nuclei/v3/pkg/projectfile"
 	"github.com/projectdiscovery/nuclei/v3/pkg/protocols/common/contextargs"
+	"github.com/projectdiscovery/nuclei/v3/pkg/protocols/common/globalmatchers"
 	"github.com/projectdiscovery/nuclei/v3/pkg/protocols/common/hosterrorscache"
 	"github.com/projectdiscovery/nuclei/v3/pkg/protocols/common/interactsh"
 	"github.com/projectdiscovery/nuclei/v3/pkg/protocols/common/utils/excludematchers"
@@ -61,6 +63,8 @@ type ExecutorOptions struct {
 	TemplatePath string
 	// TemplateInfo contains information block of the template request
 	TemplateInfo model.Info
+	// TemplateVerifier is the verifier for the template
+	TemplateVerifier string
 	// RawTemplate is the raw template for the request
 	RawTemplate []byte
 	// Output is a writer interface for writing output events from executer.
@@ -96,6 +100,8 @@ type ExecutorOptions struct {
 	InputHelper *input.Helper
 	// FuzzParamsFrequency is a cache for parameter frequency
 	FuzzParamsFrequency *frequency.Tracker
+	// FuzzStatsDB is a database for fuzzing stats
+	FuzzStatsDB *stats.Tracker
 
 	Operators []*operators.Operators // only used by offlinehttp module
 
@@ -124,6 +130,8 @@ type ExecutorOptions struct {
 	// ExportReqURLPattern exports the request URL pattern
 	// in ResultEvent it contains the exact url pattern (ex: {{BaseURL}}/{{randstr}}/xyz) used in the request
 	ExportReqURLPattern bool
+	// GlobalMatchers is the storage for global matchers with http passive templates
+	GlobalMatchers *globalmatchers.Storage
 }
 
 // todo: centralizing components is not feasible with current clogged architecture

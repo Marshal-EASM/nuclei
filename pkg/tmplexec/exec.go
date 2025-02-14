@@ -20,7 +20,6 @@ import (
 	"github.com/projectdiscovery/nuclei/v3/pkg/tmplexec/flow"
 	"github.com/projectdiscovery/nuclei/v3/pkg/tmplexec/generic"
 	"github.com/projectdiscovery/nuclei/v3/pkg/tmplexec/multiproto"
-	"github.com/projectdiscovery/nuclei/v3/pkg/types/nucleierr"
 	"github.com/projectdiscovery/utils/errkit"
 )
 
@@ -175,7 +174,15 @@ func (e *TemplateExecuter) Execute(ctx *scan.ScanContext) (bool, error) {
 		if !event.HasOperatorResult() && event.InternalEvent != nil {
 			lastMatcherEvent = event
 		} else {
-			if writer.WriteResult(event, e.options.Output, e.options.Progress, e.options.IssuesClient) {
+			var isGlobalMatchers bool
+			isGlobalMatchers, _ = event.InternalEvent["global-matchers"].(bool)
+			// NOTE(dwisiswant0): Don't store `matched` on a `global-matchers` template.
+			// This will end up generating 2 events from the same `scan.ScanContext` if
+			// one of the templates has `global-matchers` enabled. This way,
+			// non-`global-matchers` templates can enter the `writeFailureCallback`
+			// func to log failure output.
+			wr := writer.WriteResult(event, e.options.Output, e.options.Progress, e.options.IssuesClient)
+			if wr && !isGlobalMatchers {
 				matched.Store(true)
 			} else {
 				lastMatcherEvent = event
@@ -207,7 +214,9 @@ func (e *TemplateExecuter) Execute(ctx *scan.ScanContext) (bool, error) {
 	ctx.LogError(errx)
 
 	if lastMatcherEvent != nil {
-		lastMatcherEvent.InternalEvent["error"] = tryParseCause(fmt.Errorf("%s", ctx.GenerateErrorMessage()))
+		lastMatcherEvent.Lock()
+		lastMatcherEvent.InternalEvent["error"] = getErrorCause(ctx.GenerateErrorMessage())
+		lastMatcherEvent.Unlock()
 		writeFailureCallback(lastMatcherEvent, e.options.Options.MatcherStatus)
 	}
 
@@ -222,7 +231,7 @@ func (e *TemplateExecuter) Execute(ctx *scan.ScanContext) (bool, error) {
 					Info:       e.options.TemplateInfo,
 					Type:       e.getTemplateType(),
 					Host:       ctx.Input.MetaInput.Input,
-					Error:      tryParseCause(fmt.Errorf("%s", ctx.GenerateErrorMessage())),
+					Error:      getErrorCause(ctx.GenerateErrorMessage()),
 				},
 			},
 			OperatorsResult: &operators.Result{
@@ -235,31 +244,27 @@ func (e *TemplateExecuter) Execute(ctx *scan.ScanContext) (bool, error) {
 	return executed.Load() || matched.Load(), errx
 }
 
-// tryParseCause tries to parse the cause of given error
+// getErrorCause tries to parse the cause of given error
 // this is legacy support due to use of errorutil in existing libraries
 // but this should not be required once all libraries are updated
-func tryParseCause(err error) string {
-	errStr := ""
-	errX := errkit.FromError(err)
-	if errX != nil {
-		var errCause error
-
-		if len(errX.Errors()) > 1 {
-			errCause = errX.Errors()[0]
-		}
-		if errCause == nil {
-			errCause = errX
-		}
-
-		msg := strings.Trim(errCause.Error(), "{} ")
-		parts := strings.Split(msg, ":")
-		errCause = errkit.New("%s", parts[len(parts)-1])
-		errKind := errkit.GetErrorKind(err, nucleierr.ErrTemplateLogic).String()
-		errStr = errCause.Error()
-		errStr = strings.TrimSpace(strings.Replace(errStr, "errKind="+errKind, "", -1))
+func getErrorCause(err error) string {
+	if err == nil {
+		return ""
 	}
-
-	return errStr
+	errx := errkit.FromError(err)
+	var cause error
+	for _, e := range errx.Errors() {
+		if e != nil && strings.Contains(e.Error(), "context deadline exceeded") {
+			continue
+		}
+		cause = e
+		break
+	}
+	if cause == nil {
+		cause = errkit.Append(errkit.New("could not get error cause"), errx)
+	}
+	// parseScanError prettifies the error message and removes everything except the cause
+	return parseScanError(cause.Error())
 }
 
 // ExecuteWithResults executes the protocol requests and returns results instead of writing them.

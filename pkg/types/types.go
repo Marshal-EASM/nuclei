@@ -23,6 +23,9 @@ var (
 	ErrNoMoreRequests = io.EOF
 )
 
+// LoadHelperFileFunction can be used to load a helper file.
+type LoadHelperFileFunction func(helperFile, templatePath string, catalog catalog.Catalog) (io.ReadCloser, error)
+
 // Options contains the configuration options for nuclei scanner.
 type Options struct {
 	// Tags contains a list of tags to execute templates for. Multiple paths
@@ -39,6 +42,8 @@ type Options struct {
 	Templates goflags.StringSlice
 	// TemplateURLs specifies URLs to a list of templates to use
 	TemplateURLs goflags.StringSlice
+	// AITemplatePrompt specifies prompt to generate template using AI
+	AITemplatePrompt string
 	// RemoteTemplates specifies list of allowed URLs to load remote templates from
 	RemoteTemplateDomainList goflags.StringSlice
 	// 	ExcludedTemplates  specifies the template/templates to exclude
@@ -91,6 +96,10 @@ type Options struct {
 	ListDslSignatures bool
 	// List of HTTP(s)/SOCKS5 proxy to use (comma separated or file input)
 	Proxy goflags.StringSlice
+	// AliveProxy is the alive proxy to use
+	AliveHttpProxy string
+	// AliveSocksProxy is the alive socks proxy to use
+	AliveSocksProxy string
 	// TemplatesDirectory is the directory to use for storing templates
 	NewTemplatesDirectory string
 	// TraceLogFile specifies a file to write with the trace of all requests
@@ -203,6 +212,8 @@ type Options struct {
 	VerboseVerbose bool
 	// ShowVarDump displays variable dump
 	ShowVarDump bool
+	// VarDumpLimit limits the number of characters displayed in var dump
+	VarDumpLimit int
 	// No-Color disables the colored output.
 	NoColor bool
 	// UpdateTemplates updates the templates installed at startup (also used by cloud to update datasources)
@@ -214,6 +225,8 @@ type Options struct {
 	JSONRequests bool
 	// OmitRawRequests omits requests/responses for matches in JSON output
 	OmitRawRequests bool
+	// HTTPStats enables http statistics tracking and display.
+	HTTPStats bool
 	// OmitTemplate omits encoded template from JSON output
 	OmitTemplate bool
 	// JSONExport is the file to export JSON output format to
@@ -378,12 +391,20 @@ type Options struct {
 	EnableCodeTemplates bool
 	// DisableUnsignedTemplates disables processing of unsigned templates
 	DisableUnsignedTemplates bool
+	// EnableSelfContainedTemplates enables processing of self-contained templates
+	EnableSelfContainedTemplates bool
+	// EnableGlobalMatchersTemplates enables processing of global-matchers templates
+	EnableGlobalMatchersTemplates bool
+	// EnableFileTemplates enables file templates
+	EnableFileTemplates bool
 	// Disables cloud upload
 	EnableCloudUpload bool
 	// ScanID is the scan ID to use for cloud upload
 	ScanID string
 	// ScanName is the name of the scan to be uploaded
 	ScanName string
+	// ScanUploadFile is the jsonl file to upload scan results to cloud
+	ScanUploadFile string
 	// TeamID is the team ID to use for cloud upload
 	TeamID string
 	// JsConcurrency is the number of concurrent js routines to run
@@ -402,10 +423,25 @@ type Options struct {
 	ProbeConcurrency int
 	// Dast only runs DAST templates
 	DAST bool
+	// DASTServer is the flag to start nuclei as a DAST server
+	DASTServer bool
+	// DASTServerToken is the token optional for the dast server
+	DASTServerToken string
+	// DASTServerAddress is the address for the dast server
+	DASTServerAddress string
+	// DASTReport enables dast report server & final report generation
+	DASTReport bool
+	// Scope contains a list of regexes for in-scope URLS
+	Scope goflags.StringSlice
+	// OutOfScope contains a list of regexes for out-scope URLS
+	OutOfScope goflags.StringSlice
 	// HttpApiEndpoint is the experimental http api endpoint
 	HttpApiEndpoint string
 	// ListTemplateProfiles lists all available template profiles
 	ListTemplateProfiles bool
+	// LoadHelperFileFunction is a function that will be used to execute LoadHelperFile.
+	// If none is provided, then the default implementation will be used.
+	LoadHelperFileFunction LoadHelperFileFunction
 	// timeouts contains various types of timeouts used in nuclei
 	// these timeouts are derived from dial-timeout (-timeout) with known multipliers
 	// This is internally managed and does not need to be set by user by explicitly setting
@@ -538,10 +574,21 @@ func (options *Options) ParseHeadlessOptionalArguments() map[string]string {
 	return optionalArguments
 }
 
-// LoadHelperFile loads a helper file needed for the template
+// LoadHelperFile loads a helper file needed for the template.
+//
+// If LoadHelperFileFunction is set, then that function will be used.
+// Otherwise, the default implementation will be used, which respects the sandbox rules and only loads files from allowed directories.
+func (options *Options) LoadHelperFile(helperFile, templatePath string, catalog catalog.Catalog) (io.ReadCloser, error) {
+	if options.LoadHelperFileFunction != nil {
+		return options.LoadHelperFileFunction(helperFile, templatePath, catalog)
+	}
+	return options.defaultLoadHelperFile(helperFile, templatePath, catalog)
+}
+
+// defaultLoadHelperFile loads a helper file needed for the template
 // this respects the sandbox rules and only loads files from
 // allowed directories
-func (options *Options) LoadHelperFile(helperFile, templatePath string, catalog catalog.Catalog) (io.ReadCloser, error) {
+func (options *Options) defaultLoadHelperFile(helperFile, templatePath string, catalog catalog.Catalog) (io.ReadCloser, error) {
 	if !options.AllowLocalFileAccess {
 		// if global file access is disabled try loading with restrictions
 		absPath, err := options.GetValidAbsPath(helperFile, templatePath)

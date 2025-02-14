@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/projectdiscovery/nuclei/v3/pkg/input"
+
 	"github.com/logrusorgru/aurora"
 	"github.com/pkg/errors"
 	"github.com/projectdiscovery/gologger"
@@ -71,7 +73,7 @@ func (e *NucleiEngine) applyRequiredDefaults(ctx context.Context) {
 	if e.customProgress == nil {
 		e.customProgress = &testutils.MockProgressClient{}
 	}
-	if e.hostErrCache == nil {
+	if e.hostErrCache == nil && e.opts.ShouldUseHostError() {
 		e.hostErrCache = hosterrorscache.New(30, hosterrorscache.DefaultMaxHostsCount, nil)
 	}
 	// setup interactsh
@@ -108,14 +110,6 @@ func (e *NucleiEngine) init(ctx context.Context) error {
 		return err
 	}
 
-	if e.opts.ProxyInternal && types.ProxyURL != "" || types.ProxySocksURL != "" {
-		httpclient, err := httpclientpool.Get(e.opts, &httpclientpool.Configuration{})
-		if err != nil {
-			return err
-		}
-		e.httpClient = httpclient
-	}
-
 	e.parser = templates.NewParser()
 
 	if sharedInit == nil || protocolstate.ShouldInit() {
@@ -125,6 +119,14 @@ func (e *NucleiEngine) init(ctx context.Context) error {
 	sharedInit.Do(func() {
 		_ = protocolinit.Init(e.opts)
 	})
+
+	if e.opts.ProxyInternal && e.opts.AliveHttpProxy != "" || e.opts.AliveSocksProxy != "" {
+		httpclient, err := httpclientpool.Get(e.opts, &httpclientpool.Configuration{})
+		if err != nil {
+			return err
+		}
+		e.httpClient = httpclient
+	}
 
 	e.applyRequiredDefaults(ctx)
 	var err error
@@ -159,18 +161,21 @@ func (e *NucleiEngine) init(ctx context.Context) error {
 	}
 
 	e.executerOpts = protocols.ExecutorOptions{
-		Output:          e.customWriter,
-		Options:         e.opts,
-		Progress:        e.customProgress,
-		Catalog:         e.catalog,
-		IssuesClient:    e.rc,
-		RateLimiter:     e.rateLimiter,
-		Interactsh:      e.interactshClient,
-		HostErrorsCache: e.hostErrCache,
-		Colorizer:       aurora.NewAurora(true),
-		ResumeCfg:       types.NewResumeCfg(),
-		Browser:         e.browserInstance,
-		Parser:          e.parser,
+		Output:       e.customWriter,
+		Options:      e.opts,
+		Progress:     e.customProgress,
+		Catalog:      e.catalog,
+		IssuesClient: e.rc,
+		RateLimiter:  e.rateLimiter,
+		Interactsh:   e.interactshClient,
+		Colorizer:    aurora.NewAurora(true),
+		ResumeCfg:    types.NewResumeCfg(),
+		Browser:      e.browserInstance,
+		Parser:       e.parser,
+		InputHelper:  input.NewHelper(),
+	}
+	if e.opts.ShouldUseHostError() && e.hostErrCache != nil {
+		e.executerOpts.HostErrorsCache = e.hostErrCache
 	}
 	if len(e.opts.SecretsFile) > 0 {
 		authTmplStore, err := runner.GetAuthTmplStore(*e.opts, e.catalog, e.executerOpts)

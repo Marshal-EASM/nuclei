@@ -19,6 +19,8 @@ import (
 
 	"github.com/projectdiscovery/fastdialer/fastdialer"
 	"github.com/projectdiscovery/gologger"
+	"github.com/projectdiscovery/nuclei/v3/pkg/fuzz/analyzers"
+	fuzzStats "github.com/projectdiscovery/nuclei/v3/pkg/fuzz/stats"
 	"github.com/projectdiscovery/nuclei/v3/pkg/operators"
 	"github.com/projectdiscovery/nuclei/v3/pkg/output"
 	"github.com/projectdiscovery/nuclei/v3/pkg/protocols"
@@ -148,11 +150,8 @@ func (request *Request) executeRaceRequest(input *contextargs.Context, previous 
 
 	// look for unresponsive hosts and cancel inflight requests as well
 	spmHandler.SetOnResultCallback(func(err error) {
-		if err == nil {
-			return
-		}
 		// marks thsi host as unresponsive if applicable
-		request.markUnresponsiveAddress(input, err)
+		request.markHostError(input, err)
 		if request.isUnresponsiveAddress(input) {
 			// stop all inflight requests
 			spmHandler.Cancel()
@@ -233,11 +232,8 @@ func (request *Request) executeParallelHTTP(input *contextargs.Context, dynamicV
 
 	// look for unresponsive hosts and cancel inflight requests as well
 	spmHandler.SetOnResultCallback(func(err error) {
-		if err == nil {
-			return
-		}
 		// marks thsi host as unresponsive if applicable
-		request.markUnresponsiveAddress(input, err)
+		request.markHostError(input, err)
 		if request.isUnresponsiveAddress(input) {
 			// stop all inflight requests
 			spmHandler.Cancel()
@@ -377,11 +373,8 @@ func (request *Request) executeTurboHTTP(input *contextargs.Context, dynamicValu
 
 	// look for unresponsive hosts and cancel inflight requests as well
 	spmHandler.SetOnResultCallback(func(err error) {
-		if err == nil {
-			return
-		}
 		// marks thsi host as unresponsive if applicable
-		request.markUnresponsiveAddress(input, err)
+		request.markHostError(input, err)
 		if request.isUnresponsiveAddress(input) {
 			// stop all inflight requests
 			spmHandler.Cancel()
@@ -550,12 +543,12 @@ func (request *Request) ExecuteWithResults(input *contextargs.Context, dynamicVa
 			}
 			if execReqErr != nil {
 				// if applicable mark the host as unresponsive
-				request.markUnresponsiveAddress(updatedInput, execReqErr)
 				requestErr = errorutil.NewWithErr(execReqErr).Msgf("got err while executing %v", generatedHttpRequest.URL())
 				request.options.Progress.IncrementFailedRequestsBy(1)
 			} else {
 				request.options.Progress.IncrementRequests()
 			}
+			request.markHostError(updatedInput, execReqErr)
 
 			// If this was a match, and we want to stop at first match, skip all further requests.
 			shouldStopAtFirstMatch := generatedHttpRequest.original.options.Options.StopAtFirstMatch || generatedHttpRequest.original.options.StopAtFirstMatch || request.StopAtFirstMatch
@@ -908,6 +901,10 @@ func (request *Request) executeRequest(input *contextargs.Context, generatedRequ
 		if err := respChain.Fill(); err != nil {
 			return errors.Wrap(err, "could not generate response chain")
 		}
+
+		// log request stats
+		request.options.Output.RequestStatsLog(strconv.Itoa(respChain.Response().StatusCode), respChain.FullResponse().String())
+
 		// save response to projectfile
 		onceFunc()
 		matchedURL := input.MetaInput.Input
@@ -927,7 +924,25 @@ func (request *Request) executeRequest(input *contextargs.Context, generatedRequ
 				matchedURL = responseURL
 			}
 		}
+
 		finalEvent := make(output.InternalEvent)
+
+		if request.Analyzer != nil {
+			analyzer := analyzers.GetAnalyzer(request.Analyzer.Name)
+			analysisMatched, analysisDetails, err := analyzer.Analyze(&analyzers.Options{
+				FuzzGenerated:      generatedRequest.fuzzGeneratedRequest,
+				HttpClient:         request.httpClient,
+				ResponseTimeDelay:  duration,
+				AnalyzerParameters: request.Analyzer.Parameters,
+			})
+			if err != nil {
+				gologger.Warning().Msgf("Could not analyze response: %v\n", err)
+			}
+			if analysisMatched {
+				finalEvent["analyzer_details"] = analysisDetails
+				finalEvent["analyzer"] = true
+			}
+		}
 
 		outputEvent := request.responseToDSLMap(respChain.Response(), input.MetaInput.Input, matchedURL, convUtil.String(dumpedRequest), respChain.FullResponse().String(), respChain.Body().String(), respChain.Headers().String(), duration, generatedRequest.meta)
 		// add response fields to template context and merge templatectx variables to output event
@@ -973,11 +988,20 @@ func (request *Request) executeRequest(input *contextargs.Context, generatedRequ
 		// prune signature internal values if any
 		request.pruneSignatureInternalValues(generatedRequest.meta)
 
-		event := eventcreator.CreateEventWithAdditionalOptions(request, generators.MergeMaps(generatedRequest.dynamicValues, finalEvent), request.options.Options.Debug || request.options.Options.DebugResponse, func(internalWrappedEvent *output.InternalWrappedEvent) {
+		interimEvent := generators.MergeMaps(generatedRequest.dynamicValues, finalEvent)
+		isDebug := request.options.Options.Debug || request.options.Options.DebugResponse
+		event := eventcreator.CreateEventWithAdditionalOptions(request, interimEvent, isDebug, func(internalWrappedEvent *output.InternalWrappedEvent) {
 			internalWrappedEvent.OperatorsResult.PayloadValues = generatedRequest.meta
 		})
+
 		if hasInteractMatchers {
 			event.UsesInteractsh = true
+		}
+
+		if request.options.GlobalMatchers.HasMatchers() {
+			request.options.GlobalMatchers.Match(interimEvent, request.Match, request.Extract, isDebug, func(event output.InternalEvent, result *operators.Result) {
+				callback(eventcreator.CreateEventWithOperatorResults(request, event, result))
+			})
 		}
 
 		// if requrlpattern is enabled, only then it is reflected in result event else it is empty string
@@ -993,6 +1017,21 @@ func (request *Request) executeRequest(input *contextargs.Context, generatedRequ
 		dumpResponse(event, request, respChain.FullResponse().Bytes(), formedURL, responseContentType, isResponseTruncated, input.MetaInput.Input)
 
 		callback(event)
+
+		if request.options.FuzzStatsDB != nil && generatedRequest.fuzzGeneratedRequest.Request != nil {
+			request.options.FuzzStatsDB.RecordResultEvent(fuzzStats.FuzzingEvent{
+				URL:           input.MetaInput.Target(),
+				TemplateID:    request.options.TemplateID,
+				ComponentType: generatedRequest.fuzzGeneratedRequest.Component.Name(),
+				ComponentName: generatedRequest.fuzzGeneratedRequest.Parameter,
+				PayloadSent:   generatedRequest.fuzzGeneratedRequest.Value,
+				StatusCode:    respChain.Response().StatusCode,
+				Matched:       event.HasResults(),
+				RawRequest:    string(dumpedRequest),
+				RawResponse:   respChain.FullResponse().String(),
+				Severity:      request.options.TemplateInfo.SeverityHolder.Severity.String(),
+			})
+		}
 
 		// Skip further responses if we have stop-at-first-match and a match
 		if (request.options.Options.StopAtFirstMatch || request.options.StopAtFirstMatch || request.StopAtFirstMatch) && event.HasResults() {
@@ -1042,6 +1081,10 @@ func (request *Request) validateNFixEvent(input *contextargs.Context, gr *genera
 
 // addCNameIfAvailable adds the cname to the event if available
 func (request *Request) addCNameIfAvailable(hostname string, outputEvent map[string]interface{}) {
+	if protocolstate.Dialer == nil {
+		return
+	}
+
 	data, err := protocolstate.Dialer.GetDNSData(hostname)
 	if err == nil {
 		switch len(data.CNAME) {
@@ -1167,20 +1210,17 @@ func (request *Request) newContext(input *contextargs.Context) context.Context {
 	return input.Context()
 }
 
-// markUnresponsiveAddress checks if the error is a unreponsive host error and marks it
-func (request *Request) markUnresponsiveAddress(input *contextargs.Context, err error) {
-	if err == nil {
-		return
-	}
+// markHostError checks if the error is a unreponsive host error and marks it
+func (request *Request) markHostError(input *contextargs.Context, err error) {
 	if request.options.HostErrorsCache != nil {
-		request.options.HostErrorsCache.MarkFailed(input, err)
+		request.options.HostErrorsCache.MarkFailedOrRemove(request.options.ProtocolType.String(), input, err)
 	}
 }
 
 // isUnresponsiveAddress checks if the error is a unreponsive based on its execution history
 func (request *Request) isUnresponsiveAddress(input *contextargs.Context) bool {
 	if request.options.HostErrorsCache != nil {
-		return request.options.HostErrorsCache.Check(input)
+		return request.options.HostErrorsCache.Check(request.options.ProtocolType.String(), input)
 	}
 	return false
 }

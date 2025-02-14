@@ -2,7 +2,6 @@ package openapi
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -20,6 +19,7 @@ import (
 	"github.com/projectdiscovery/nuclei/v3/pkg/input/formats"
 	httpTypes "github.com/projectdiscovery/nuclei/v3/pkg/input/types"
 	"github.com/projectdiscovery/nuclei/v3/pkg/types"
+	"github.com/projectdiscovery/nuclei/v3/pkg/utils/json"
 	errorutil "github.com/projectdiscovery/utils/errors"
 	"github.com/projectdiscovery/utils/generic"
 	mapsutil "github.com/projectdiscovery/utils/maps"
@@ -27,7 +27,8 @@ import (
 )
 
 const (
-	globalAuth = "globalAuth"
+	globalAuth                 = "globalAuth"
+	DEFAULT_HTTP_SCHEME_HEADER = "Authorization"
 )
 
 // GenerateRequestsFromSchema generates http requests from an OpenAPI 3.0 document object
@@ -234,7 +235,7 @@ func generateRequestsFromOp(opts *generateReqOptions) error {
 					// if it is in path then remove it from path
 					opts.requestPath = strings.Replace(opts.requestPath, fmt.Sprintf("{%s}", value.Name), "", -1)
 					if !opts.opts.RequiredOnly {
-						gologger.Verbose().Msgf("openapi: skipping optinal param (%s) in (%v) in request [%s] %s due to missing value (%v)\n", value.Name, value.In, opts.method, opts.requestPath, value.Name)
+						gologger.Verbose().Msgf("openapi: skipping optional param (%s) in (%v) in request [%s] %s due to missing value (%v)\n", value.Name, value.In, opts.method, opts.requestPath, value.Name)
 					}
 					continue
 				}
@@ -416,7 +417,7 @@ schemaLabel:
 	return globalParams, nil
 }
 
-// generateExampleFromSchema generates an example from a schema object
+// GenerateParameterFromSecurityScheme generates an example from a schema object
 func GenerateParameterFromSecurityScheme(scheme *openapi3.SecuritySchemeRef) (*openapi3.Parameter, error) {
 	if !generic.EqualsAny(scheme.Value.Type, "http", "apiKey") {
 		return nil, errorutil.NewWithTag("openapi", "unsupported security scheme type (%s) found in openapi file", scheme.Value.Type)
@@ -426,18 +427,20 @@ func GenerateParameterFromSecurityScheme(scheme *openapi3.SecuritySchemeRef) (*o
 		if !generic.EqualsAny(scheme.Value.Scheme, "basic", "bearer") {
 			return nil, errorutil.NewWithTag("openapi", "unsupported security scheme (%s) found in openapi file", scheme.Value.Scheme)
 		}
-		if scheme.Value.Name == "" {
-			return nil, errorutil.NewWithTag("openapi", "security scheme (%s) name is empty", scheme.Value.Scheme)
+		// HTTP authentication schemes basic or bearer use the Authorization header
+		headerName := scheme.Value.Name
+		if headerName == "" {
+			headerName = DEFAULT_HTTP_SCHEME_HEADER
 		}
 		// create parameters using the scheme
 		switch scheme.Value.Scheme {
 		case "basic":
-			h := openapi3.NewHeaderParameter(scheme.Value.Name)
+			h := openapi3.NewHeaderParameter(headerName)
 			h.Required = true
 			h.Description = globalAuth // differentiator for normal variables and global auth
 			return h, nil
 		case "bearer":
-			h := openapi3.NewHeaderParameter(scheme.Value.Name)
+			h := openapi3.NewHeaderParameter(headerName)
 			h.Required = true
 			h.Description = globalAuth // differentiator for normal variables and global auth
 			return h, nil
