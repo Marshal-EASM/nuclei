@@ -90,7 +90,7 @@ func New(opts Options) (*Service, error) {
 	}
 
 	// load tech detect templates
-	techDetectTemplates, err := LoadTemplatesWithTags(opts, templateDirs, []string{"tech", "panel", "detect", "favicon"}, false, true)
+	techDetectTemplates, err := LoadTemplatesWithTags(opts, templateDirs, []string{"tech", "detect", "favicon"}, false, true)
 	if err != nil {
 		return nil, err
 	}
@@ -171,6 +171,7 @@ func (s *Service) executeAutomaticScanOnTarget(input *contextargs.MetaInput) {
 		len(finalTags), matched, input.Input, len(tagsFromWappalyzer), tagsFromWappalyzer, len(tagsFromDetectTemplates), tagsFromDetectTemplates, len(s.opts.Options.ExtraTags), s.opts.Options.ExtraTags)
 
 	// also include any extra tags passed by user
+	finalTags = append(finalTags, s.opts.Options.Tags...)
 	finalTags = sliceutil.Dedupe(finalTags)
 
 	if len(finalTags) == 0 && !useIncludeID {

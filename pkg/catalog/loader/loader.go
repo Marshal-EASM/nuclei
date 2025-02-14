@@ -50,6 +50,7 @@ type Config struct {
 	ExcludeTemplates         []string
 	IncludeTemplates         []string
 	RemoteTemplateDomainList []string
+	AITemplatePrompt         string
 
 	Tags              []string
 	ExtraTags         []string
@@ -111,6 +112,7 @@ func NewConfig(options *types.Options, catalog catalog.Catalog, executerOpts pro
 		IncludeConditions:        options.IncludeConditions,
 		Catalog:                  catalog,
 		ExecutorOptions:          executerOpts,
+		AITemplatePrompt:         options.AITemplatePrompt,
 	}
 	loaderConfig.RemoteTemplateDomainList = append(loaderConfig.RemoteTemplateDomainList, TrustedTemplateDomains...)
 	return &loaderConfig
@@ -135,7 +137,6 @@ func New(cfg *Config) (*Store, error) {
 		return nil, err
 	}
 
-	// Create a tag filter based on provided configuration
 	store := &Store{
 		id:        cfg.StoreId,
 		config:    cfg,
@@ -166,7 +167,6 @@ func New(cfg *Config) (*Store, error) {
 		if _, err := urlutil.Parse(v); err == nil {
 			remoteTemplates = append(remoteTemplates, handleTemplatesEditorURLs(v))
 		} else {
-
 			templatesFinal = append(templatesFinal, v) // something went wrong, treat it as a file
 		}
 	}
@@ -183,6 +183,15 @@ func New(cfg *Config) (*Store, error) {
 		store.finalWorkflows = append(store.finalWorkflows, remoteWorkflows...)
 	}
 
+	// Handle AI template generation if prompt is provided
+	if len(cfg.AITemplatePrompt) > 0 {
+		aiTemplates, err := getAIGeneratedTemplates(cfg.AITemplatePrompt, cfg.ExecutorOptions.Options)
+		if err != nil {
+			return nil, err
+		}
+		store.finalTemplates = append(store.finalTemplates, aiTemplates...)
+	}
+
 	// Handle a dot as the current working directory
 	if len(store.finalTemplates) == 1 && store.finalTemplates[0] == "." {
 		currentDirectory, err := os.Getwd()
@@ -191,6 +200,7 @@ func New(cfg *Config) (*Store, error) {
 		}
 		store.finalTemplates = []string{currentDirectory}
 	}
+
 	// Handle a case with no templates or workflows, where we use base directory
 	if len(store.finalTemplates) == 0 && len(store.finalWorkflows) == 0 && !urlBasedTemplatesProvided {
 		store.finalTemplates = []string{config.DefaultConfig.TemplatesDirectory}
@@ -300,6 +310,27 @@ func (store *Store) LoadTemplatesOnlyMetadata() error {
 
 	for templatePath := range validPaths {
 		template, _, _ := templatesCache.Has(templatePath)
+
+		if len(template.RequestsHeadless) > 0 && !store.config.ExecutorOptions.Options.Headless {
+			continue
+		}
+
+		if len(template.RequestsCode) > 0 && !store.config.ExecutorOptions.Options.EnableCodeTemplates {
+			continue
+		}
+
+		if template.IsFuzzing() && !store.config.ExecutorOptions.Options.DAST {
+			continue
+		}
+
+		if template.SelfContained && !store.config.ExecutorOptions.Options.EnableSelfContainedTemplates {
+			continue
+		}
+
+		if template.HasFileProtocol() && !store.config.ExecutorOptions.Options.EnableFileTemplates {
+			continue
+		}
+
 		if template != nil {
 			template.Path = templatePath
 			store.templates = append(store.templates, template)
@@ -354,12 +385,29 @@ func (store *Store) areWorkflowOrTemplatesValid(filteredTemplatePaths map[string
 		if err != nil {
 			if isParsingError("Error occurred parsing template %s: %s\n", templatePath, err) {
 				areTemplatesValid = false
+				continue
 			}
+		} else if template == nil {
+			// NOTE(dwisiswant0): possibly global matchers template.
+			// This could definitely be handled better, for example by returning an
+			// `ErrGlobalMatchersTemplate` during `templates.Parse` and checking it
+			// with `errors.Is`.
+			//
+			// However, I'm not sure if every reference to it should be handled
+			// that way. Returning a `templates.Template` pointer would mean it's
+			// an active template (sending requests), and adding a specific field
+			// like `isGlobalMatchers` in `templates.Template` (then checking it
+			// with a `*templates.Template.IsGlobalMatchersEnabled` method) would
+			// just introduce more unknown issues - like during template
+			// clustering, AFAIK.
+			continue
 		} else {
 			if existingTemplatePath, found := templateIDPathMap[template.ID]; !found {
 				templateIDPathMap[template.ID] = templatePath
 			} else {
-				areTemplatesValid = false
+				// TODO: until https://github.com/projectdiscovery/nuclei-templates/issues/11324 is deployed
+				// disable strict validation to allow GH actions to run
+				// areTemplatesValid = false
 				gologger.Warning().Msgf("Found duplicate template ID during validation '%s' => '%s': %s\n", templatePath, existingTemplatePath, template.ID)
 			}
 			if !isWorkflow && len(template.Workflows) > 0 {
@@ -476,6 +524,17 @@ func (store *Store) LoadTemplatesWithTags(templatesList, tags []string) []*templ
 						stats.Increment(templates.SkippedUnsignedStats)
 						return
 					}
+
+					if parsed.SelfContained && !store.config.ExecutorOptions.Options.EnableSelfContainedTemplates {
+						stats.Increment(templates.ExcludedSelfContainedStats)
+						return
+					}
+
+					if parsed.HasFileProtocol() && !store.config.ExecutorOptions.Options.EnableFileTemplates {
+						stats.Increment(templates.ExcludedFileStats)
+						return
+					}
+
 					// if template has request signature like aws then only signed and verified templates are allowed
 					if parsed.UsesRequestSignature() && !parsed.Verified {
 						stats.Increment(templates.SkippedRequestSignatureStats)
@@ -485,7 +544,8 @@ func (store *Store) LoadTemplatesWithTags(templatesList, tags []string) []*templ
 					// Skip DAST filter when loading auth templates
 					if store.ID() != AuthStoreId && store.config.ExecutorOptions.Options.DAST {
 						// check if the template is a DAST template
-						if parsed.IsFuzzing() {
+						// also allow global matchers template to be loaded
+						if parsed.IsFuzzing() || parsed.Options.GlobalMatchers != nil && parsed.Options.GlobalMatchers.HasMatchers() {
 							loadTemplate(parsed)
 						}
 					} else if len(parsed.RequestsHeadless) > 0 && !store.config.ExecutorOptions.Options.Headless {

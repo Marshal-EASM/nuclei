@@ -20,7 +20,6 @@ import (
 	"github.com/projectdiscovery/nuclei/v3/pkg/protocols/common/helpers/eventcreator"
 	"github.com/projectdiscovery/nuclei/v3/pkg/protocols/common/helpers/responsehighlighter"
 	"github.com/projectdiscovery/nuclei/v3/pkg/protocols/common/interactsh"
-	"github.com/projectdiscovery/nuclei/v3/pkg/protocols/common/utils/vardump"
 	"github.com/projectdiscovery/nuclei/v3/pkg/protocols/headless/engine"
 	protocolutils "github.com/projectdiscovery/nuclei/v3/pkg/protocols/utils"
 	templateTypes "github.com/projectdiscovery/nuclei/v3/pkg/templates/types"
@@ -30,7 +29,7 @@ import (
 
 var _ protocols.Request = &Request{}
 
-const errCouldGetHtmlElement = "could get html element"
+const errCouldNotGetHtmlElement = "could not get html element"
 
 // Type returns the type of the protocol request
 func (request *Request) Type() templateTypes.ProtocolType {
@@ -52,14 +51,13 @@ func (request *Request) ExecuteWithResults(input *contextargs.Context, metadata,
 	}
 
 	vars := protocolutils.GenerateVariablesWithContextArgs(input, false)
-	payloads := generators.BuildPayloadFromOptions(request.options.Options)
+	optionVars := generators.BuildPayloadFromOptions(request.options.Options)
 	// add templatecontext variables to varMap
-	values := generators.MergeMaps(vars, metadata, payloads)
 	if request.options.HasTemplateCtx(input.MetaInput) {
-		values = generators.MergeMaps(values, request.options.GetTemplateCtx(input.MetaInput).GetAll())
+		vars = generators.MergeMaps(vars, metadata, optionVars, request.options.GetTemplateCtx(input.MetaInput).GetAll())
 	}
-	variablesMap := request.options.Variables.Evaluate(values)
-	payloads = generators.MergeMaps(variablesMap, payloads, request.options.Constants)
+	variablesMap := request.options.Variables.Evaluate(vars)
+	vars = generators.MergeMaps(vars, variablesMap, request.options.Constants)
 
 	// check for operator matches by wrapping callback
 	gotmatches := false
@@ -71,7 +69,7 @@ func (request *Request) ExecuteWithResults(input *contextargs.Context, metadata,
 	}
 	// verify if fuzz elaboration was requested
 	if len(request.Fuzzing) > 0 {
-		return request.executeFuzzingRule(input, payloads, previous, wrappedCallback)
+		return request.executeFuzzingRule(input, vars, previous, wrappedCallback)
 	}
 	if request.generator != nil {
 		iterator := request.generator.NewIterator()
@@ -83,13 +81,13 @@ func (request *Request) ExecuteWithResults(input *contextargs.Context, metadata,
 			if gotmatches && (request.StopAtFirstMatch || request.options.Options.StopAtFirstMatch || request.options.StopAtFirstMatch) {
 				return nil
 			}
-			value = generators.MergeMaps(value, payloads)
+			value = generators.MergeMaps(value, vars)
 			if err := request.executeRequestWithPayloads(input, value, previous, wrappedCallback); err != nil {
 				return err
 			}
 		}
 	} else {
-		value := maps.Clone(payloads)
+		value := maps.Clone(vars)
 		if err := request.executeRequestWithPayloads(input, value, previous, wrappedCallback); err != nil {
 			return err
 		}
@@ -117,20 +115,16 @@ func (request *Request) executeRequestWithPayloads(input *contextargs.Context, p
 	if err != nil {
 		request.options.Output.Request(request.options.TemplatePath, input.MetaInput.Input, request.Type().String(), err)
 		request.options.Progress.IncrementFailedRequestsBy(1)
-		return errors.Wrap(err, errCouldGetHtmlElement)
+		return errors.Wrap(err, errCouldNotGetHtmlElement)
 	}
 	defer instance.Close()
-
-	if vardump.EnableVarDump {
-		gologger.Debug().Msgf("Headless Protocol request variables: \n%s\n", vardump.DumpVariables(payloads))
-	}
 
 	instance.SetInteractsh(request.options.Interactsh)
 
 	if _, err := url.Parse(input.MetaInput.Input); err != nil {
 		request.options.Output.Request(request.options.TemplatePath, input.MetaInput.Input, request.Type().String(), err)
 		request.options.Progress.IncrementFailedRequestsBy(1)
-		return errors.Wrap(err, errCouldGetHtmlElement)
+		return errors.Wrap(err, errCouldNotGetHtmlElement)
 	}
 	options := &engine.Options{
 		Timeout:       time.Duration(request.options.Options.PageTimeout) * time.Second,
@@ -146,7 +140,7 @@ func (request *Request) executeRequestWithPayloads(input *contextargs.Context, p
 	if err != nil {
 		request.options.Output.Request(request.options.TemplatePath, input.MetaInput.Input, request.Type().String(), err)
 		request.options.Progress.IncrementFailedRequestsBy(1)
-		return errors.Wrap(err, errCouldGetHtmlElement)
+		return errors.Wrap(err, errCouldNotGetHtmlElement)
 	}
 	defer page.Close()
 

@@ -203,6 +203,8 @@ func (m *MockOutputWriter) WriteFailure(wrappedEvent *output.InternalWrappedEven
 	return m.Write(data)
 }
 
+func (m *MockOutputWriter) RequestStatsLog(statusCode, response string) {}
+
 var maxTemplateFileSizeForEncoding = unitutils.Mega
 
 func (w *MockOutputWriter) encodeTemplate(templatePath string) string {
